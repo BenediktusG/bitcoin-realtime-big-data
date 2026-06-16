@@ -1,0 +1,4 @@
+.venv
+venv_bigdata
+hadoop.env
+.env
