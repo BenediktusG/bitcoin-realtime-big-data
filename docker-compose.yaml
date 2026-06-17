@@ -69,6 +69,7 @@ services:
     environment:
       # Hanya mengatur user admin (default) dan membuat database
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=${CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
     volumes:
