@@ -1,6 +1,38 @@
 version: '3.8'
 
 services:
+  # ── Hadoop ──────────────────────────────────────────────────
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode3
+    ports:
+      - '9872:9870' 
+      - '9020:9000' 
+    environment:
+      - CLUSTER_NAME=${CLUSTER_NAME}
+      - HDFS_NAMENODE_USER=${HDFS_NAMENODE_USER}
+      - HDFS_DATANODE_USER=${HDFS_DATANODE_USER}
+      - HDFS_SECONDARYNAMENODE_USER=${HDFS_SECONDARYNAMENODE_USER}
+      - YARN_RESOURCEMANAGER_USER=${YARN_RESOURCEMANAGER_USER}
+      - YARN_NODEMANAGER_USER=${YARN_NODEMANAGER_USER}
+      - CORE_CONF_fs_defaultFS=${CORE_CONF_fs_defaultFS}
+    volumes:
+      - namenode-data:/hadoop/dfs/name
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode3
+    depends_on:
+      - namenode
+    environment:
+      - HDFS_NAMENODE_USER=${HDFS_NAMENODE_USER}
+      - HDFS_DATANODE_USER=${HDFS_DATANODE_USER}
+      - HDFS_SECONDARYNAMENODE_USER=${HDFS_SECONDARYNAMENODE_USER}
+      - YARN_RESOURCEMANAGER_USER=${YARN_RESOURCEMANAGER_USER}
+      - YARN_NODEMANAGER_USER=${YARN_NODEMANAGER_USER}
+      - CORE_CONF_fs_defaultFS=${CORE_CONF_fs_defaultFS}
+    volumes:
+      - datanode-data:/hadoop/dfs/data
   # ── Spark ────────────────────────────────────────────────────
   # Migrated from bde2020/spark-master:3.0.0-hadoop3.2
   # to the official Apache image (Ubuntu-based, Python 3.10+).
@@ -11,6 +43,9 @@ services:
     ports:
       - '8083:8080'   # Spark Web UI
       - '7079:7077'   # Spark master port
+    depends_on:
+      - namenode
+      - datanode
     environment:
       - SPARK_MASTER_HOST=spark-master3
       - PYSPARK_PYTHON=python3
@@ -90,3 +125,5 @@ services:
 volumes:
   clickhouse-data:
   grafana-data:
+  namenode-data:
+  datanode-data:
