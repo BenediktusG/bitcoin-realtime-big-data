@@ -6,32 +6,31 @@ from pyspark.ml.feature import VectorAssembler
 from pyspark.ml import Pipeline
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator, BinaryClassificationEvaluator
 from dotenv import load_dotenv
-from pyspark.sql.functions import date_trunc
 
-from synapse.ml.lightgbm import LightGBMClassifier
+# PENTING: Import Random Forest bawaan Spark
+from pyspark.ml.classification import RandomForestClassifier
 
 load_dotenv()
 
-# --- 1. Inisialisasi Spark Session ---
-print("[1] Memulai Spark Session untuk LightGBM...")
-# PENTING: .config("spark.jars.packages", ...) telah dihapus dari sini.
+print("[1] Memulai Spark Session...")
+# Tidak perlu lagi .config("spark.jars.packages"...)
 spark = SparkSession.builder \
-    .appName("Bitcoin_LightGBM_Production") \
+    .appName("Bitcoin_RandomForest_Advance") \
     .config("spark.master", "spark://spark-master3:7077") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
 
-# --- 2. Mengambil Data dari ClickHouse secara Aman ---
 print("[2] Mengambil data dari ClickHouse...")
 ch_url = "jdbc:clickhouse://clickhouse3:8123/{}".format(os.getenv("CLICKHOUSE_DB", "bigdata"))
 
-# Mengubah time menjadi UNIX timestamp agar valid digunakan sebagai partitionColumn oleh Spark
 query = """
 (SELECT 
     *,
     toUnixTimestamp(time) as time_unix
-FROM bitcoin_features) as btc_data
+FROM bitcoin_features
+WHERE time >= toDateTime('2025-01-01 00:00:00') -- Sesuaikan dengan tahun data Anda
+) as btc_data
 """
 
 df = spark.read \
@@ -47,35 +46,23 @@ df = spark.read \
     .option("numPartitions", "8") \
     .load()
 
-# --- 3. Menghitung Target Secara Global di Spark ---
 print("[3] Menghitung variabel target time-series...")
-
-# 1. Buat kolom bantuan berisi tanggal (hari) dari kolom time
 df = df.withColumn("date_part", col("time").cast("date"))
-
-# 2. Definisikan Window dengan partitionBy
-# Spark sekarang akan memecah dan mengurutkan data per HARI, bukan seluruh data sekaligus
 windowSpec = Window.partitionBy("date_part").orderBy("time")
 
-# 3. Hitung target
 df = df.withColumn("next_close", lead("close", 1).over(windowSpec))
 df = df.withColumn("target", when(col("next_close") > col("close"), 1).otherwise(0))
-
-# 4. Buang data yang kosong
 df = df.dropna(subset=["next_close", "target"])
 df = df.drop("date_part")
 
-# --- 4. Membagi Data (Time-Series Split) ---
 print("[4] Membagi data secara kronologis (80% Train, 20% Test)...")
-# time_unix sudah ada, bisa langsung dimanfaatkan
 quantiles = df.approxQuantile("time_unix", [0.8], 0.01) 
 split_time_numeric = quantiles[0]
 
 train_df = df.filter(col("time_unix") <= split_time_numeric)
 test_df = df.filter(col("time_unix") > split_time_numeric)
 
-# --- 5. Membangun ML Pipeline LightGBM ---
-print("[5] Membangun ML Pipeline LightGBM...")
+print("[5] Membangun ML Pipeline Random Forest...")
 fitur_kolom = [
     'open', 'high', 'low', 'close', 'volume', 
     'close_lag_1', 'volume_lag_1', 'close_roll_mean_5', 'close_delta'
@@ -83,24 +70,22 @@ fitur_kolom = [
 
 assembler = VectorAssembler(inputCols=fitur_kolom, outputCol="features")
 
-lgbm = LightGBMClassifier(
-    objective="binary",
+# Konfigurasi Random Forest Advance
+rf = RandomForestClassifier(
     featuresCol="features",
     labelCol="target",
-    numIterations=100,      
-    learningRate=0.05,
-    maxDepth=5,
-    isUnbalance=True        
+    numTrees=50,          # 50 pohon sudah cukup kuat sebagai awal
+    maxDepth=5,           # Cegah overfitting
+    featureSubsetStrategy="auto",
+    seed=42
 )
 
-pipeline = Pipeline(stages=[assembler, lgbm])
+pipeline = Pipeline(stages=[assembler, rf])
 
-# --- 6. Melatih Model ---
-print("[6] Melatih model LightGBM (Distributed)...")
+print("[6] Melatih model Random Forest (Distributed)...")
 model = pipeline.fit(train_df)
 
-# --- 7. Evaluasi Model ---
-print("[7] Mengevaluasi model LightGBM...")
+print("[7] Mengevaluasi model Random Forest...")
 predictions = model.transform(test_df)
 
 multi_evaluator = MulticlassClassificationEvaluator(labelCol="target", predictionCol="prediction")
@@ -112,17 +97,16 @@ recall = multi_evaluator.evaluate(predictions, {multi_evaluator.metricName: "wei
 binary_evaluator = BinaryClassificationEvaluator(labelCol="target", rawPredictionCol="rawPrediction", metricName="areaUnderROC")
 auc_roc = binary_evaluator.evaluate(predictions)
 
-print("\n=== HASIL EVALUASI LIGHTGBM ADVANCE ===")
+print("\n=== HASIL EVALUASI RANDOM FOREST ADVANCE ===")
 print("Akurasi   : {:.2f}%".format(accuracy * 100))
 print("Precision : {:.4f}".format(precision))
 print("Recall    : {:.4f}".format(recall))
 print("F1-Score  : {:.4f}".format(f1_score))
 print("AUC (ROC) : {:.4f}".format(auc_roc))
-print("=======================================\n")
+print("============================================\n")
 
-# --- 8. Simpan Model ---
 print("[8] Menyimpan model ke HDFS...")
-model_path = "hdfs://namenode3:9000/models/lgbm_advance_model"
+model_path = "hdfs://namenode3:9000/models/rf_advance_model"
 model.write().overwrite().save(model_path)
 print(f"Model berhasil disimpan ke HDFS: {model_path}")
 
