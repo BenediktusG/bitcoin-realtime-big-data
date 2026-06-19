@@ -1,4 +1,5 @@
 import os
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator, BinaryClassificationEvaluator
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lead, when
 from pyspark.sql.window import Window
@@ -16,6 +17,8 @@ spark = SparkSession.builder \
     .appName("Bitcoin_LogReg_Baseline") \
     .config("spark.master", "spark://spark-master3:7077") \
     .getOrCreate() # Pastikan jar ClickHouse JDBC sudah ditambahkan saat submit
+
+spark.sparkContext.setLogLevel("WARN")
 
 # --- 2. Mengambil Data dari ClickHouse via JDBC ---
 print("[2] Mengambil data dari ClickHouse...")
@@ -48,12 +51,17 @@ df = df.dropna()
 # --- 4. Membagi Data (Time-Series Split) ---
 print("[4] Membagi data secara kronologis...")
 # Di Spark, split waktu terbaik menggunakan filter timestamp, bukan randomSplit()
-# Kita cari batas waktu persentil 80% (secara kasar menggunakan perhitungan kuantil)
-quantiles = df.approxQuantile("time", [0.8], 0.01) # Mencari waktu di batas 80%
-split_time = quantiles[0]
 
-train_df = df.filter(col("time") <= split_time)
-test_df = df.filter(col("time") > split_time)
+# 1. Ubah sementara kolom 'time' menjadi tipe angka (long/detik) untuk perhitungan kuantil
+df_numeric_time = df.withColumn("time_long", col("time").cast("long"))
+
+# 2. Cari batas waktu persentil 80% menggunakan kolom numerik tersebut
+quantiles = df_numeric_time.approxQuantile("time_long", [0.8], 0.01) 
+split_time_numeric = quantiles[0]
+
+# 3. Bagi data menggunakan kolom 'time' yang di-cast ke long untuk perbandingan batas
+train_df = df.filter(col("time").cast("long") <= split_time_numeric)
+test_df = df.filter(col("time").cast("long") > split_time_numeric)
 
 # --- 5. Membangun ML Pipeline ---
 print("[5] Membangun ML Pipeline...")
@@ -77,13 +85,26 @@ model = pipeline.fit(train_df)
 print("[7] Melakukan evaluasi model...")
 predictions = model.transform(test_df)
 
-evaluator = MulticlassClassificationEvaluator(labelCol="target", predictionCol="prediction", metricName="accuracy")
-accuracy = evaluator.evaluate(predictions)
+# 1. Evaluator untuk Akurasi, Precision, Recall, dan F1-Score
+evaluator_multi = MulticlassClassificationEvaluator(labelCol="target", predictionCol="prediction")
 
+accuracy = evaluator_multi.evaluate(predictions, {evaluator_multi.metricName: "accuracy"})
+precision = evaluator_multi.evaluate(predictions, {evaluator_multi.metricName: "weightedPrecision"})
+recall = evaluator_multi.evaluate(predictions, {evaluator_multi.metricName: "weightedRecall"})
+f1_score = evaluator_multi.evaluate(predictions, {evaluator_multi.metricName: "f1"})
+
+# 2. Evaluator Khusus Binary Classification untuk skor AUC
+evaluator_bin = BinaryClassificationEvaluator(labelCol="target", rawPredictionCol="rawPrediction", metricName="areaUnderROC")
+auc = evaluator_bin.evaluate(predictions)
+
+# Menampilkan Hasil Metrik
 print("\n=== HASIL EVALUASI SPARK BASELINE ===")
-
-acc_percent = accuracy * 100
-print("Akurasi: {:.2f}%\n".format(acc_percent))
+print("Akurasi   : {:.2f}%".format(accuracy * 100))
+print("Precision : {:.4f}  (Seberapa akurat tebakan 'Harga Naik' dari model)".format(precision))
+print("Recall    : {:.4f}  (Berapa banyak momen 'Harga Naik' yang berhasil ditangkap)".format(recall))
+print("F1-Score  : {:.4f}  (Keseimbangan antara Precision dan Recall)".format(f1_score))
+print("AUC (ROC) : {:.4f}  (Kemampuan model membedakan kelas 1 dan 0, skor 0.5 = kebetulan)".format(auc))
+print("=======================================\n")
 
 # --- 8. Simpan Model untuk Production ---
 model_path = "hdfs://namenode3:9000/models/logreg_baseline_model"
