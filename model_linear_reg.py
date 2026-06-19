@@ -25,7 +25,7 @@ ch_url = "jdbc:clickhouse://clickhouse3:8123/{}".format(os.getenv("CLICKHOUSE_DB
 query = """
 (SELECT *, toUnixTimestamp(time) as time_unix
  FROM bitcoin_features
- WHERE time >= toDateTime('2026-05-01 00:00:00')
+ WHERE time >= toDateTime('2025-01-01 00:00:00')
 ) as btc_data
 """
 
@@ -39,8 +39,8 @@ df = spark.read.format("jdbc").option("url", ch_url) \
 print("[3] Feature Engineering (n-60) & Target Regresi (n+60)...")
 df = df.withColumn("date_part", col("time").cast("date"))
 
-window_exact = Window.partitionBy("date_part").orderBy("time")
-window_past_60 = Window.partitionBy("date_part").orderBy("time").rowsBetween(-60, 0)
+window_exact = Window.partitionBy("date_part").orderBy("time_unix")
+window_past_60 = Window.partitionBy("date_part").orderBy("time_unix").rangeBetween(-60, 0)
 
 # A. Fitur Masa Lalu
 df = df.withColumn("close_mean_60", _mean("close").over(window_past_60))
@@ -51,6 +51,10 @@ df = df.withColumn("volume_sum_60", _sum("volume").over(window_past_60))
 
 df = df.withColumn("close_lag_60", lag("close", 60).over(window_exact))
 df = df.withColumn("close_delta_60", col("close") - col("close_lag_60"))
+
+df = df.withColumn("dist_to_mean_60", (col("close") - col("close_mean_60")) / col("close_mean_60"))
+df = df.withColumn("dist_to_max_60", (col("close_max_60") - col("close")) / col("close"))
+df = df.withColumn("dist_to_min_60", (col("close") - col("close_min_60")) / col("close_min_60"))
 
 # B. TARGET REGRESI (Selisih harga masa depan dengan harga saat ini)
 df = df.withColumn("next_close_60", lead("close", 60).over(window_exact))
@@ -67,9 +71,11 @@ test_df = df.filter(col("time_unix") > split_time_numeric)
 
 print("[5] Membangun ML Pipeline Regresi...")
 fitur_kolom = [
-    'open', 'high', 'low', 'close', 'volume', 
+    # 'open', 'high', 'low', 'close', 'volume', 
+    'volume', 
     'close_lag_1', 'volume_lag_1', 'close_roll_mean_5', 'close_delta',
-    'close_mean_60', 'close_max_60', 'close_min_60', 'close_std_60', 'volume_sum_60', 'close_delta_60'
+    'dist_to_mean_60', 'dist_to_max_60', 'dist_to_min_60', 
+    'close_std_60', 'volume_sum_60', 'close_delta_60'
 ]
 
 assembler = VectorAssembler(inputCols=fitur_kolom, outputCol="raw_features")
@@ -78,7 +84,7 @@ assembler = VectorAssembler(inputCols=fitur_kolom, outputCol="raw_features")
 scaler = StandardScaler(inputCol="raw_features", outputCol="features", withStd=True, withMean=True)
 
 # Inisialisasi Linear Regression
-lr = LinearRegression(featuresCol="features", labelCol="target", maxIter=100)
+lr = LinearRegression(featuresCol="features", labelCol="target", maxIter=100, regParam=0.1, elasticNetParam=0.5)
 pipeline = Pipeline(stages=[assembler, scaler, lr])
 
 print("[6] Melatih Model Linear Regression...")
