@@ -137,11 +137,11 @@ print("==============================================\n")
 # --- 8. Simpan Model (Double-Storage Backups) ---
 print("[8] Menyimpan Model ke HDFS dan Local Container...")
 
-hdfs_path = "hdfs://namenode3:9000/models/rf_regressor_optim_model"
+hdfs_path = "hdfs://namenode3:9000/models/random_forest_reg"
 model.write().overwrite().save(hdfs_path)
 print("✅ Model berhasil diamankan di HDFS: {}".format(hdfs_path))
 
-local_path = "file:///opt/spark/models/rf_regressor_optim_model"
+local_path = "file:///opt/spark/models/random_forest_reg"
 model.write().overwrite().save(local_path)
 print("✅ Model berhasil diamankan di Local Container: {}".format("/opt/spark/models/rf_regressor_optim_model"))
 
