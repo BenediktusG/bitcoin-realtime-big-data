@@ -110,13 +110,13 @@ print("========================================\n")
 print("[8] Menyimpan Model ke HDFS dan Local Container...")
 
 # 1. Simpan ke HDFS (Untuk Production/Sistem Terdistribusi)
-hdfs_path = "hdfs://namenode3:9000/models/linreg_baseline_model"
+hdfs_path = "hdfs://namenode3:9000/models/linear_reg"
 model.write().overwrite().save(hdfs_path)
 print("✅ Model tersimpan di HDFS: {}".format(hdfs_path))
 
 # 2. Simpan ke Local File System di dalam Container Spark
 # Gunakan awalan file:// agar tidak salah masuk ke HDFS
-local_path = "file:///opt/spark/models/linreg_baseline_model"
+local_path = "file:///opt/spark/models/linear_reg"
 model.write().overwrite().save(local_path)
 print("✅ Model tersimpan di Local Container: {}".format("/opt/spark/models/linreg_baseline_model"))
 
