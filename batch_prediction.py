@@ -2,7 +2,6 @@ import os
 import time as pytime
 import logging
 from dotenv import load_dotenv
-import clickhouse_connect
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 from pyspark.ml import PipelineModel
@@ -30,17 +29,24 @@ if os.path.exists('/.dockerenv') or os.getenv('SPARK_HOME') is not None:
     CH_HOST = 'clickhouse3'
     CH_PORT = '8123'
 
-def get_clickhouse_client():
+def execute_clickhouse_ddl(spark, jdbc_url, user, password, query):
     try:
-        client = clickhouse_connect.get_client(
-            host=CH_HOST, port=CH_PORT, username=CH_USER, password=CH_PASSWORD, database=CH_DB
-        )
-        return client
+        sc = spark.sparkContext
+        sc._jvm.java.lang.Class.forName("com.clickhouse.jdbc.ClickHouseDriver")
+        properties = sc._jvm.java.util.Properties()
+        properties.setProperty("user", user)
+        properties.setProperty("password", password)
+        conn = sc._jvm.java.sql.DriverManager.getConnection(jdbc_url, properties)
+        stmt = conn.createStatement()
+        stmt.execute(query)
+        stmt.close()
+        conn.close()
+        return True
     except Exception as e:
-        logging.error(f"Gagal terhubung ke ClickHouse: {e}")
-        raise
+        logging.warning(f"Gagal menjalankan query DDL/JDBC: {e}")
+        return False
 
-def setup_predictions_table(client):
+def setup_predictions_table(spark, jdbc_url, user, password):
     create_table_query = """
     CREATE TABLE IF NOT EXISTS bigdata.bitcoin_predictions (
         time DateTime,
@@ -51,32 +57,13 @@ def setup_predictions_table(client):
     PARTITION BY toYYYYMM(time)
     ORDER BY (time);
     """
-    try:
-        client.command(create_table_query)
+    if execute_clickhouse_ddl(spark, jdbc_url, user, password, create_table_query):
         logging.info("Tabel 'bitcoin_predictions' siap digunakan (ReplacingMergeTree).")
-    except Exception as e:
-        logging.warning(f"Tidak dapat membuat/memverifikasi tabel (mungkin hak akses DDL terbatas): {e}")
+    else:
+        logging.warning("Tidak dapat membuat/memverifikasi tabel (mungkin hak akses DDL terbatas).")
 
 def main():
-    # 1. Inisialisasi ClickHouse Client
-    ch_client = get_clickhouse_client()
-    setup_predictions_table(ch_client)
-
-    # Dapatkan waktu terakhir yang sudah diprediksi untuk idempotensi & inkremental
-    latest_time_res = "1970-01-01 00:00:00"
-    try:
-        res = ch_client.command("SELECT max(time) FROM bigdata.bitcoin_predictions")
-        if res and res != 0:
-            if hasattr(res, 'strftime'):
-                latest_time_res = res.strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                latest_time_res = str(res)
-    except Exception as e:
-        logging.info(f"Tabel bitcoin_predictions kosong atau belum siap: {e}")
-
-    logging.info(f"Mengambil data baru dengan time > '{latest_time_res}'")
-
-    # 2. Inisialisasi Spark Session
+    # 1. Inisialisasi Spark Session
     if os.path.exists('/.dockerenv') or os.getenv('SPARK_HOME') is not None:
         jdbc_url = f"jdbc:clickhouse://clickhouse3:8123/{CH_DB}"
     else:
@@ -88,7 +75,34 @@ def main():
         .getOrCreate() 
     spark.sparkContext.setLogLevel("WARN")
 
-    # 3. Ambil data baru secara native menggunakan Spark JDBC
+    # 2. Inisialisasi Tabel Prediksi via Spark JDBC
+    setup_predictions_table(spark, jdbc_url, CH_USER, CH_PASSWORD)
+
+    # 3. Dapatkan waktu terakhir yang sudah diprediksi untuk idempotensi & inkremental
+    latest_time_res = "1970-01-01 00:00:00"
+    try:
+        df_max = spark.read \
+            .format("jdbc") \
+            .option("url", jdbc_url) \
+            .option("user", CH_USER) \
+            .option("password", CH_PASSWORD) \
+            .option("dbtable", "(SELECT max(time) as max_time FROM bigdata.bitcoin_predictions) AS max_time_query") \
+            .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
+            .load()
+        
+        rows = df_max.collect()
+        if rows and rows[0]['max_time']:
+            res = rows[0]['max_time']
+            if hasattr(res, 'strftime'):
+                latest_time_res = res.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                latest_time_res = str(res)
+    except Exception as e:
+        logging.info(f"Tabel bitcoin_predictions kosong atau belum siap: {e}")
+
+    logging.info(f"Mengambil data baru dengan time > '{latest_time_res}'")
+
+    # 4. Ambil data baru secara native menggunakan Spark JDBC
     query = f"""
     (
         SELECT 
@@ -113,28 +127,27 @@ def main():
     # Cek apakah data kosong
     if spark_df.rdd.isEmpty():
         logging.info("Tidak ada data baru untuk diprediksi. Keluar...")
-        ch_client.close()
         spark.stop()
         return
 
     logging.info("Memulai Spark untuk prediksi...")
 
-    # 4. Load Model dari HDFS
+    # 5. Load Model dari HDFS
     hdfs_path = "hdfs://namenode3:9000/models/random_forest_reg"
     logging.info(f"Memuat model dari HDFS: {hdfs_path}")
     model = PipelineModel.load(hdfs_path)
 
-    # 5. Siapkan data untuk model (tambahkan time_unix)
+    # 6. Siapkan data untuk model (tambahkan time_unix)
     spark_df = spark_df.withColumn("time_unix", col("time").cast("long"))
 
-    # 6. Jalankan Inference Model
+    # 7. Jalankan Inference Model
     predictions = model.transform(spark_df)
 
-    # 7. Hitung predicted_close = close + prediction
+    # 8. Hitung predicted_close = close + prediction
     result_spark_df = predictions.withColumn("predicted_close", col("close") + col("prediction")) \
                                  .select("time", "close", "prediction", "predicted_close")
 
-    # 8. Tulis ke ClickHouse secara native via Spark JDBC
+    # 9. Tulis ke ClickHouse secara native via Spark JDBC
     logging.info("Menulis prediksi kembali ke ClickHouse via Spark JDBC...")
     result_spark_df.write \
         .format("jdbc") \
@@ -146,15 +159,14 @@ def main():
         .mode("append") \
         .save()
 
-    # 9. Jalankan OPTIMIZE untuk deduplikasi ReplacingMergeTree jika diizinkan
+    # 10. Jalankan OPTIMIZE untuk deduplikasi ReplacingMergeTree jika diizinkan
     try:
         logging.info("Deduplikasi final (OPTIMIZE TABLE)...")
-        ch_client.command("OPTIMIZE TABLE bigdata.bitcoin_predictions FINAL")
+        execute_clickhouse_ddl(spark, jdbc_url, CH_USER, CH_PASSWORD, "OPTIMIZE TABLE bigdata.bitcoin_predictions FINAL")
         logging.info("Deduplikasi selesai.")
     except Exception as e:
         logging.warning(f"OPTIMIZE dilewati (mungkin hak akses ALTER terbatas): {e}")
 
-    ch_client.close()
     logging.info("Proses batch prediction selesai dengan sukses!")
     spark.stop()
 
