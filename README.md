@@ -114,3 +114,48 @@ docker exec -e CLICKHOUSE_USER="default" -e CLICKHOUSE_PASSWORD="SuperSecureAdmi
 ```bash
 docker cp nama_container_spark_kamu:/opt/spark/models/linreg_baseline_model ./linreg_baseline_model
 ```
+
+## How to insert trained model into HDFS
+
+<!-- ### 1. Create the parent directory if it doesn't exist
+```bash
+docker exec -it namenode3 hdfs dfs -mkdir -p hdfs://namenode3:9000/models
+``` -->
+
+### 1. Copy local directory recursively into HDFS
+```bash
+docker cp random_forest_reg namenode3:/tmp/random_forest_reg
+docker exec -it namenode3 hdfs dfs -put -f /tmp/random_forest_reg /models/random_forest_reg
+```
+
+## Batch Prediction (Spark)
+### 1. Copy the clickhouse-jdbc to the container
+
+```bash
+docker cp clickhouse-jdbc.jar spark-master3:/clickhouse-jdbc.jar
+```
+
+### 2. install some dependencies for run the model script
+
+```bash
+docker exec -it spark-master3 pip install python-dotenv
+```
+
+### 3. copy batch_prediction code into spark container
+
+```bash
+docker cp batch_prediction.py spark-master3:/batch_prediction.py
+```
+
+### 4. copy the env variables into spark container
+```bash
+docker cp .env spark-master3:/.env
+```
+
+### 5. Run the script in docker container
+
+change the file if u want to change the model. this command use 4gb ram and driver memory 2gb. it takes like 30-45 minutes to train. So go goon first.
+
+```bash
+docker exec -it spark-master3 /opt/spark/bin/spark-submit --master spark://spark-master3:7077 --driver-memory 2g  --executor-memory 4g --jars /clickhouse-jdbc.jar --driver-class-path /clickhouse-jdbc.jar /batch_prediction.py
+```
