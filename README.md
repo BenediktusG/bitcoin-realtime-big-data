@@ -128,6 +128,36 @@ docker cp random_forest_reg namenode3:/tmp/random_forest_reg
 docker exec -it namenode3 hdfs dfs -put -f /tmp/random_forest_reg /models/random_forest_reg
 ```
 
+## Batch Training (Spark)
+### 1. Copy the clickhouse-jdbc to the container
+
+```bash
+docker cp clickhouse-jdbc.jar spark-master3:/clickhouse-jdbc.jar
+```
+
+### 2. install some dependencies for run the script
+
+```bash
+docker exec -it spark-master3 pip install python-dotenv
+```
+
+### 3. copy batch_train code into spark container
+
+```bash
+docker cp batch_train.py spark-master3:/batch_train.py
+```
+
+### 4. copy the env variables into spark container
+```bash
+docker cp .env spark-master3:/.env
+```
+
+### 5. Run the script in docker container
+
+```bash
+docker exec -it spark-master3 /opt/spark/bin/spark-submit --master spark://spark-master3:7077 --driver-memory 2g  --executor-memory 4g --jars /clickhouse-jdbc.jar --driver-class-path /clickhouse-jdbc.jar /batch_train.py
+```
+
 ## Batch Prediction (Spark)
 ### 1. Copy the clickhouse-jdbc to the container
 
