@@ -47,40 +47,20 @@ df = spark.read \
     .option("numPartitions", "8") \
     .load()
 
-# --- 3. Feature Engineering & Target Regresi (n+60) ---
-print("[3] Melakukan Rekayasa Fitur (Rasio/Momentum) & Target Kontinu (n+60)...")
+# --- 3. Target Regresi (n+60) ---
+print("[3] Membuat Target Kontinu (n+60)...")
 
+# Mempertahankan partisi tanggal agar komputasi target terdistribusi dengan baik
 df = df.withColumn("date_part", col("time").cast("date"))
-
-# Jendela Waktu (WAJIB menggunakan partitionBy agar komputasi terdistribusi)
 window_exact = Window.partitionBy("date_part").orderBy("time_unix")
-window_past_60 = Window.partitionBy("date_part").orderBy("time_unix").rowsBetween(-60, 0)
 
-# A. Pembuatan Fitur Jendela Waktu 60 Detik
-df = df.withColumn("close_mean_60", _mean("close").over(window_past_60))
-df = df.withColumn("close_max_60", _max("close").over(window_past_60))
-df = df.withColumn("close_min_60", _min("close").over(window_past_60))
-df = df.withColumn("close_std_60", _stddev("close").over(window_past_60))
-df = df.withColumn("volume_sum_60", _sum("volume").over(window_past_60))
-
-df = df.withColumn("close_lag_60", lag("close", 60).over(window_exact))
-df = df.withColumn("close_delta_60", col("close") - col("close_lag_60"))
-
-# Transformasi Stationarity (Rasio Jarak, Bebas Harga Absolut)
-df = df.withColumn("dist_to_mean_60", (col("close") - col("close_mean_60")) / col("close_mean_60"))
-df = df.withColumn("dist_to_max_60", (col("close_max_60") - col("close")) / col("close"))
-df = df.withColumn("dist_to_min_60", (col("close") - col("close_min_60")) / col("close_min_60"))
-
-# Transformasi fitur mikro bawaan tabel agar bebas harga absolut juga
-df = df.withColumn("dist_to_mean_5", (col("close") - col("close_roll_mean_5")) / col("close_roll_mean_5"))
-
-# B. Target Regresi: Nominal selisih harga 60 detik ke depan
+# Target Regresi: Nominal selisih harga 60 detik ke depan
 df = df.withColumn("next_close_60", lead("close", 60).over(window_exact))
 df = df.withColumn("target", col("next_close_60") - col("close"))
 
-# Bersihkan nilai Null dan Hapus kolom sementara/absolut yang tidak perlu
+# Bersihkan nilai Null dan Hapus kolom sementara
 df = df.dropna()
-df = df.drop("date_part", "close_lag_60", "next_close_60", "close_mean_60", "close_max_60", "close_min_60")
+df = df.drop("date_part", "next_close_60")
 
 # OPTIMASI: Kunci hasil perhitungan di memori agar proses training tidak mengulang kalkulasi Window
 df.cache()
