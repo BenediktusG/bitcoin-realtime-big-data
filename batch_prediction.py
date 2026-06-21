@@ -50,9 +50,7 @@ def setup_predictions_table(spark, jdbc_url, user, password):
     create_table_query = """
     CREATE TABLE IF NOT EXISTS bigdata.bitcoin_predictions (
         time DateTime,
-        close Float64,
-        prediction Float64,
-        predicted_close Float64
+        close_prediction Nullable(Float64)
     ) ENGINE = ReplacingMergeTree()
     PARTITION BY toYYYYMM(time)
     ORDER BY (time);
@@ -143,9 +141,10 @@ def main():
     # 7. Jalankan Inference Model
     predictions = model.transform(spark_df)
 
-    # 8. Hitung predicted_close = close + prediction
-    result_spark_df = predictions.withColumn("predicted_close", col("close") + col("prediction")) \
-                                 .select("time", "close", "prediction", "predicted_close")
+    # 8. Hitung close_prediction = close + prediction, dan geser time ke +60 detik
+    result_spark_df = predictions.withColumn("close_prediction", col("close") + col("prediction")) \
+                                 .withColumn("time", (col("time_unix") + 60).cast("timestamp")) \
+                                 .select("time", "close_prediction")
 
     # 9. Tulis ke ClickHouse secara native via Spark JDBC
     logging.info("Menulis prediksi kembali ke ClickHouse via Spark JDBC...")
