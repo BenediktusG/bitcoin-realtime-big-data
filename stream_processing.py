@@ -1,13 +1,15 @@
 import os
+import json
 import logging
 import datetime
 from dotenv import load_dotenv
 
+import pandas as pd
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, unix_timestamp, window, expr, to_timestamp, lead, lag, mean as _mean, max as _max, min as _min, stddev as _stddev, sum as _sum
+from pyspark.sql.functions import col, from_json, unix_timestamp, to_timestamp, lit
 from pyspark.sql.types import StructType, StructField, TimestampType, DoubleType, StringType
 from pyspark.ml import PipelineModel
-from pyspark.sql.window import Window
+from pyspark.sql.streaming.state import GroupStateTimeout, GroupState
 
 logging.basicConfig(
     level=logging.INFO, 
@@ -44,78 +46,98 @@ schema = StructType([
     StructField("volume", DoubleType(), True)
 ])
 
-def process_micro_batch(batch_df, batch_id, spark, model):
+out_schema = StructType([
+    StructField("time", TimestampType(), True),
+    StructField("close", DoubleType(), True),
+    StructField("volume", DoubleType(), True),
+    StructField("volume_lag_1", DoubleType(), True),
+    StructField("close_delta", DoubleType(), True),
+    StructField("dist_to_mean_5", DoubleType(), True),
+    StructField("dist_to_mean_60", DoubleType(), True),
+    StructField("dist_to_max_60", DoubleType(), True),
+    StructField("dist_to_min_60", DoubleType(), True),
+    StructField("close_std_60", DoubleType(), True),
+    StructField("volume_sum_60", DoubleType(), True),
+    StructField("close_delta_60", DoubleType(), True)
+])
+
+state_schema = StructType([
+    StructField("history_json", StringType(), True)
+])
+
+def process_state(key, pdfs, state):
+    if state.hasTimedOut:
+        state.remove()
+        return iter([])
+
+    if state.exists:
+        history = json.loads(state.get()[0])
+    else:
+        history = []
+        
+    out_records = []
+    
+    for pdf in pdfs:
+        for idx, row in pdf.iterrows():
+            record = {
+                'time': str(row['time']),
+                'close': float(row['close']),
+                'volume': float(row['volume'])
+            }
+            history.append(record)
+            if len(history) > 61:
+                history.pop(0)
+                
+            if len(history) == 61:
+                current = history[-1]
+                lag_1 = history[-2]
+                lag_60 = history[0]
+                
+                close_vals = [h['close'] for h in history[1:]]
+                vol_vals = [h['volume'] for h in history[1:]]
+                close_vals_5 = close_vals[-5:]
+                
+                mean_5 = sum(close_vals_5) / 5.0
+                mean_60 = sum(close_vals) / 60.0
+                max_60 = max(close_vals)
+                min_60 = min(close_vals)
+                
+                import math
+                variance = sum((x - mean_60) ** 2 for x in close_vals) / 60.0
+                std_60 = math.sqrt(variance)
+                sum_vol_60 = sum(vol_vals)
+                
+                features = {
+                    'time': pd.Timestamp(current['time']),
+                    'close': current['close'],
+                    'volume': current['volume'],
+                    'volume_lag_1': lag_1['volume'],
+                    'close_delta': current['close'] - lag_1['close'],
+                    'dist_to_mean_5': (current['close'] - mean_5) / mean_5,
+                    'dist_to_mean_60': (current['close'] - mean_60) / mean_60,
+                    'dist_to_max_60': (max_60 - current['close']) / current['close'],
+                    'dist_to_min_60': (current['close'] - min_60) / min_60,
+                    'close_std_60': std_60,
+                    'volume_sum_60': sum_vol_60,
+                    'close_delta_60': current['close'] - lag_60['close']
+                }
+                out_records.append(features)
+                
+    state.update((json.dumps(history),))
+    
+    if out_records:
+        yield pd.DataFrame(out_records)
+    else:
+        yield pd.DataFrame(columns=[f.name for f in out_schema.fields])
+
+def save_and_predict(batch_df, batch_id, model):
     if batch_df.isEmpty():
         return
         
-    logging.info(f"Memproses Micro-Batch ID: {batch_id} (Jumlah baris: {batch_df.count()})")
-    
-    # Konversi time dari String ke Timestamp
-    batch_df = batch_df.withColumn("time", to_timestamp("time", "yyyy-MM-dd HH:mm:ss"))
-    
-    # Simpan raw data ke bitcoin_orders
-    batch_df.write \
-        .format("jdbc") \
-        .option("url", jdbc_url) \
-        .option("user", CH_USER) \
-        .option("password", CH_PASSWORD) \
-        .option("dbtable", "bigdata.bitcoin_orders") \
-        .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
-        .mode("append") \
-        .save()
-    logging.info("Tersimpan raw data ke bitcoin_orders.")
-
-    # Untuk feature engineering (butuh 60 baris sebelumnya), kita akan ambil 65 baris terakhir dari bitcoin_orders
-    history_query = f"""
-    (SELECT time, close, volume FROM bigdata.bitcoin_orders ORDER BY time DESC LIMIT 65) AS hist
-    """
-    history_df = spark.read \
-        .format("jdbc") \
-        .option("url", jdbc_url) \
-        .option("user", CH_USER) \
-        .option("password", CH_PASSWORD) \
-        .option("dbtable", history_query) \
-        .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
-        .load()
-    
-    # Hitung fitur
-    window_past_60 = Window.orderBy("time").rowsBetween(-60, 0)
-    window_past_5 = Window.orderBy("time").rowsBetween(-5, 0)
-    window_exact = Window.orderBy("time")
-    
-    feat_df = history_df.withColumn("close_mean_60", _mean("close").over(window_past_60)) \
-                        .withColumn("close_max_60", _max("close").over(window_past_60)) \
-                        .withColumn("close_min_60", _min("close").over(window_past_60)) \
-                        .withColumn("close_std_60", _stddev("close").over(window_past_60)) \
-                        .withColumn("volume_sum_60", _sum("volume").over(window_past_60)) \
-                        .withColumn("close_mean_5", _mean("close").over(window_past_5)) \
-                        .withColumn("close_lag_60", lag("close", 60).over(window_exact)) \
-                        .withColumn("volume_lag_1", lag("volume", 1).over(window_exact)) \
-                        .withColumn("close_lag_1", lag("close", 1).over(window_exact))
-                        
-    feat_df = feat_df.withColumn("close_delta", col("close") - col("close_lag_1")) \
-                     .withColumn("close_delta_60", col("close") - col("close_lag_60")) \
-                     .withColumn("dist_to_mean_60", (col("close") - col("close_mean_60")) / col("close_mean_60")) \
-                     .withColumn("dist_to_max_60", (col("close_max_60") - col("close")) / col("close")) \
-                     .withColumn("dist_to_min_60", (col("close") - col("close_min_60")) / col("close_min_60")) \
-                     .withColumn("dist_to_mean_5", (col("close") - col("close_mean_5")) / col("close_mean_5"))
-
-    # Ambil baris yang sesuai dengan data baru di micro-batch ini
-    min_time = batch_df.select(_min("time")).collect()[0][0]
-    new_features_df = feat_df.filter(col("time") >= min_time).dropna()
-    
-    if new_features_df.isEmpty():
-        logging.info("Data history belum cukup untuk menghasilkan fitur 60-baris. Menunggu batch berikutnya...")
-        return
-        
-    final_features_df = new_features_df.select(
-        "time", "close", "volume", "volume_lag_1", "close_delta",
-        "dist_to_mean_5", "dist_to_mean_60", "dist_to_max_60", "dist_to_min_60",
-        "close_std_60", "volume_sum_60", "close_delta_60"
-    )
+    logging.info(f"Micro-Batch ID: {batch_id} - Menyimpan fitur dan memprediksi...")
 
     # 1. Simpan fitur ke ClickHouse
-    final_features_df.write \
+    batch_df.write \
         .format("jdbc") \
         .option("url", jdbc_url) \
         .option("user", CH_USER) \
@@ -124,10 +146,9 @@ def process_micro_batch(batch_df, batch_id, spark, model):
         .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
         .mode("append") \
         .save()
-    logging.info("Tersimpan fitur yang dihitung ke bitcoin_features.")
     
     # 2. Prediksi model
-    pred_input_df = final_features_df.withColumn("time_unix", unix_timestamp(col("time")))
+    pred_input_df = batch_df.withColumn("time_unix", unix_timestamp(col("time")))
     predictions = model.transform(pred_input_df)
     
     # 3. Hitung absolute close prediction (time + 60s)
@@ -145,12 +166,24 @@ def process_micro_batch(batch_df, batch_id, spark, model):
         .mode("append") \
         .save()
         
-    logging.info("Prediksi Spark berhasil disimpan ke bitcoin_predictions.")
+    logging.info("Prediksi Stateful Stream berhasil disimpan.")
+
+def save_raw_orders(batch_df, batch_id):
+    if batch_df.isEmpty(): return
+    batch_df.write \
+        .format("jdbc") \
+        .option("url", jdbc_url) \
+        .option("user", CH_USER) \
+        .option("password", CH_PASSWORD) \
+        .option("dbtable", "bigdata.bitcoin_orders") \
+        .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
+        .mode("append") \
+        .save()
 
 def main():
-    logging.info("Inisialisasi Spark Session untuk Structured Streaming...")
+    logging.info("Inisialisasi Spark Session untuk Stateful Structured Streaming...")
     spark = SparkSession.builder \
-        .appName("Bitcoin_Structured_Streaming") \
+        .appName("Bitcoin_Stateful_Streaming") \
         .config("spark.master", "spark://spark-master3:7077") \
         .config("spark.sql.streaming.checkpointLocation", "/tmp/spark_streaming_checkpoints") \
         .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0") \
@@ -163,7 +196,6 @@ def main():
     model = PipelineModel.load(hdfs_path)
 
     logging.info(f"Membaca stream dari Kafka {KAFKA_URL} topik {TOPIC_NAME}...")
-    # Read from Kafka using Spark Structured Streaming
     kafka_df = spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", KAFKA_URL) \
@@ -171,18 +203,36 @@ def main():
         .option("startingOffsets", "latest") \
         .load()
 
-    # Parse JSON value
     parsed_df = kafka_df.selectExpr("CAST(value AS STRING)") \
         .select(from_json("value", schema).alias("data")) \
         .select("data.*")
+        
+    parsed_df = parsed_df.withColumn("time", to_timestamp("time", "yyyy-MM-dd HH:mm:ss"))
 
-    # Start stream and process using foreachBatch
-    query = parsed_df.writeStream \
-        .foreachBatch(lambda df, epoch_id: process_micro_batch(df, epoch_id, spark, model)) \
+    # Stream 1: Menyimpan data mentah ke bitcoin_orders
+    query_raw = parsed_df.writeStream \
+        .foreachBatch(save_raw_orders) \
         .start()
 
-    logging.info("Structured Streaming berjalan. Tekan Ctrl+C untuk berhenti.")
-    query.awaitTermination()
+    # Stream 2: Proses stateful feature engineering & Prediksi
+    stateful_features_df = parsed_df \
+        .withColumn("routing_key", lit("bitcoin")) \
+        .groupBy("routing_key") \
+        .applyInPandasWithState(
+            process_state,
+            outputStructType=out_schema,
+            stateStructType=state_schema,
+            outputMode="append",
+            timeoutConf="NoTimeout"
+        )
+
+    query_predict = stateful_features_df.writeStream \
+        .foreachBatch(lambda df, epoch_id: save_and_predict(df, epoch_id, model)) \
+        .start()
+
+    logging.info("Stateful Structured Streaming berjalan. Tekan Ctrl+C untuk berhenti.")
+    query_raw.awaitTermination()
+    query_predict.awaitTermination()
 
 if __name__ == '__main__':
     main()
