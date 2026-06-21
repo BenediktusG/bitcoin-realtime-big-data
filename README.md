@@ -179,5 +179,12 @@ docker cp .env spark-master3:/.env
 ### 4. Run the script in docker container
 
 ```bash
-docker exec -it spark-master3 /opt/spark/bin/spark-submit --master spark://spark-master3:7077 --driver-memory 2g  --executor-memory 4g --jars /clickhouse-jdbc.jar --driver-class-path /clickhouse-jdbc.jar /stream_processing.py
+docker exec -it spark-master3 /opt/spark/bin/spark-submit \
+  --master spark://spark-master3:7077 \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
+  --jars /clickhouse-jdbc.jar \
+  --driver-class-path /clickhouse-jdbc.jar \
+  /stream_processing.py
 ```
