@@ -19,7 +19,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 dotenv_path = os.path.join(script_dir, '.env')
 load_dotenv(dotenv_path=dotenv_path)
 
-KAFKA_URL = os.getenv('KAFKA_URL', '127.0.0.1:9094')
+KAFKA_URL = os.getenv('SPARK_KAFKA_URL', '127.0.0.1:9094')
 TOPIC_NAME = 'bitcoin-orders'
 
 SPARK_CH_HOST = os.getenv('SPARK_CH_HOST', 'localhost')
