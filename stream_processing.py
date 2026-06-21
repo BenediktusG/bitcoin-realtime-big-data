@@ -31,7 +31,7 @@ CH_DB = os.getenv('CLICKHOUSE_DB', 'bigdata')
 if os.path.exists('/.dockerenv') or os.getenv('SPARK_HOME') is not None:
     SPARK_CH_HOST = 'clickhouse3'
     SPARK_CH_PORT = '8123'
-    KAFKA_URL = 'kafka3:9092'
+    KAFKA_URL = 'kafka3:29092'
 
 jdbc_url = f"jdbc:clickhouse://{SPARK_CH_HOST}:{SPARK_CH_PORT}/{CH_DB}"
 
