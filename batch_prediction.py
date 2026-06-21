@@ -19,8 +19,8 @@ dotenv_path = os.path.join(script_dir, '.env')
 load_dotenv(dotenv_path=dotenv_path)
 
 # ClickHouse HTTP Settings (Menggunakan SPARK_CH_USER dan SPARK_CH_PASSWORD)
-CH_HOST = os.getenv('CH_HOST', 'localhost')
-CH_PORT = os.getenv('CH_PORT', '8125')
+CH_HOST = os.getenv('SPARK_CH_HOST', 'clickhouse3')
+CH_PORT = os.getenv('SPARK_CH_PORT', '8123')
 CH_USER = os.getenv('SPARK_CH_USER', 'spark_user')
 CH_PASSWORD = os.getenv('SPARK_CH_PASSWORD', 'spark_secure_password_123!')
 CH_DB = os.getenv('CLICKHOUSE_DB', 'bigdata')
@@ -76,44 +76,55 @@ def main():
 
     logging.info(f"Mengambil data baru dengan time > '{latest_time_res}'")
 
-    # 2. Ambil data baru sebagai Pandas DataFrame menggunakan clickhouse-connect
-    query = f"""
-    SELECT 
-        time, close, volume, volume_lag_1, close_delta,
-        dist_to_mean_5, dist_to_mean_60, dist_to_max_60, dist_to_min_60,
-        close_std_60, volume_sum_60, close_delta_60
-    FROM bigdata.bitcoin_features
-    WHERE time > toDateTime('{latest_time_res}')
-    ORDER BY time ASC
-    """
-    
-    logging.info("Mengambil fitur baru dari ClickHouse via clickhouse-connect...")
-    features_pandas_df = ch_client.query_df(query)
-    
-    row_count = len(features_pandas_df)
-    if row_count == 0:
-        logging.info("Tidak ada data baru untuk diprediksi. Keluar...")
-        ch_client.close()
-        return
+    # 2. Inisialisasi Spark Session
+    if os.path.exists('/.dockerenv') or os.getenv('SPARK_HOME') is not None:
+        jdbc_url = f"jdbc:clickhouse://clickhouse3:8123/{CH_DB}"
+    else:
+        jdbc_url = f"jdbc:clickhouse://localhost:8125/{CH_DB}"
 
-    logging.info(f"Ditemukan {row_count} data baru. Memulai Spark untuk prediksi...")
-
-    # 3. Inisialisasi Spark Session
     spark = SparkSession.builder \
         .appName("Bitcoin_Batch_Prediction") \
         .config("spark.master", "spark://spark-master3:7077") \
         .getOrCreate() 
     spark.sparkContext.setLogLevel("WARN")
 
+    # 3. Ambil data baru secara native menggunakan Spark JDBC
+    query = f"""
+    (
+        SELECT 
+            time, close, volume, volume_lag_1, close_delta,
+            dist_to_mean_5, dist_to_mean_60, dist_to_max_60, dist_to_min_60,
+            close_std_60, volume_sum_60, close_delta_60
+        FROM bigdata.bitcoin_features
+        WHERE time > toDateTime('{latest_time_res}')
+    ) AS features_query
+    """
+    
+    logging.info("Mengambil fitur baru dari ClickHouse via Spark JDBC...")
+    spark_df = spark.read \
+        .format("jdbc") \
+        .option("url", jdbc_url) \
+        .option("user", CH_USER) \
+        .option("password", CH_PASSWORD) \
+        .option("dbtable", query) \
+        .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
+        .load()
+    
+    # Cek apakah data kosong
+    if spark_df.rdd.isEmpty():
+        logging.info("Tidak ada data baru untuk diprediksi. Keluar...")
+        ch_client.close()
+        spark.stop()
+        return
+
+    logging.info("Memulai Spark untuk prediksi...")
+
     # 4. Load Model dari HDFS
-    hdfs_path = "hdfs://namenode3:9000/models/rf_regressor_optim_model"
+    hdfs_path = "hdfs://namenode3:9000/models/random_forest_reg"
     logging.info(f"Memuat model dari HDFS: {hdfs_path}")
     model = PipelineModel.load(hdfs_path)
 
-    # 5. Konversi Pandas DataFrame ke Spark DataFrame
-    # time_unix diperlukan untuk komputasi window atau internal model jika ada, buat kolomnya
-    spark_df = spark.createDataFrame(features_pandas_df)
-    # Tambahkan time_unix (untuk time series split / indexing jika diperlukan oleh model)
+    # 5. Siapkan data untuk model (tambahkan time_unix)
     spark_df = spark_df.withColumn("time_unix", col("time").cast("long"))
 
     # 6. Jalankan Inference Model
@@ -123,15 +134,19 @@ def main():
     result_spark_df = predictions.withColumn("predicted_close", col("close") + col("prediction")) \
                                  .select("time", "close", "prediction", "predicted_close")
 
-    # 8. Konversi hasil kembali ke Pandas DataFrame untuk ditulis via clickhouse-connect
-    logging.info("Mengonversi hasil prediksi kembali ke Pandas...")
-    result_pandas_df = result_spark_df.toPandas()
+    # 8. Tulis ke ClickHouse secara native via Spark JDBC
+    logging.info("Menulis prediksi kembali ke ClickHouse via Spark JDBC...")
+    result_spark_df.write \
+        .format("jdbc") \
+        .option("url", jdbc_url) \
+        .option("dbtable", "bigdata.bitcoin_predictions") \
+        .option("user", CH_USER) \
+        .option("password", CH_PASSWORD) \
+        .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
+        .mode("append") \
+        .save()
 
-    # 9. Tulis ke ClickHouse
-    logging.info("Menulis prediksi kembali ke ClickHouse via clickhouse-connect...")
-    ch_client.insert_df("bigdata.bitcoin_predictions", result_pandas_df)
-
-    # 10. Jalankan OPTIMIZE untuk deduplikasi ReplacingMergeTree jika diizinkan
+    # 9. Jalankan OPTIMIZE untuk deduplikasi ReplacingMergeTree jika diizinkan
     try:
         logging.info("Deduplikasi final (OPTIMIZE TABLE)...")
         ch_client.command("OPTIMIZE TABLE bigdata.bitcoin_predictions FINAL")
