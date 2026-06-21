@@ -72,8 +72,7 @@ test_df = df.filter(col("time_unix") > split_time_numeric)
 print("[5] Membangun ML Pipeline Regresi...")
 fitur_kolom = [
     # 'open', 'high', 'low', 'close', 'volume', 
-    'volume', 
-    'close_lag_1', 'volume_lag_1', 'close_roll_mean_5', 'close_delta',
+    'volume', 'volume_lag_1', 'close_delta', 'dist_to_mean_5', 
     'dist_to_mean_60', 'dist_to_max_60', 'dist_to_min_60', 
     'close_std_60', 'volume_sum_60', 'close_delta_60'
 ]
@@ -110,13 +109,13 @@ print("========================================\n")
 print("[8] Menyimpan Model ke HDFS dan Local Container...")
 
 # 1. Simpan ke HDFS (Untuk Production/Sistem Terdistribusi)
-hdfs_path = "hdfs://namenode3:9000/models/linear_reg"
+hdfs_path = "hdfs://namenode3:9000/models/linear_reg_fix"
 model.write().overwrite().save(hdfs_path)
 print("✅ Model tersimpan di HDFS: {}".format(hdfs_path))
 
 # 2. Simpan ke Local File System di dalam Container Spark
 # Gunakan awalan file:// agar tidak salah masuk ke HDFS
-local_path = "file:///opt/spark/models/linear_reg"
+local_path = "file:///opt/spark/models/linear_reg_fix"
 model.write().overwrite().save(local_path)
 print("✅ Model tersimpan di Local Container: {}".format("/opt/spark/models/linreg_baseline_model"))
 
