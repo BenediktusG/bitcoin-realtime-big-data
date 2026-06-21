@@ -43,7 +43,7 @@ def setup_clickhouse():
         
         # 2. Setup Spark User
         f"CREATE USER IF NOT EXISTS {os.getenv('SPARK_CH_USER')} IDENTIFIED WITH sha256_password BY '{os.getenv('SPARK_CH_PASSWORD')}';",
-        "GRANT INSERT, SELECT ON bigdata.* TO spark_user;",
+        "GRANT INSERT, SELECT, CREATE TABLE ON bigdata.* TO spark_user;",
         
         # 3. Setup User Visualisasi (Grafana)
         f"CREATE USER IF NOT EXISTS {os.getenv('GRAFANA_CH_USER')} IDENTIFIED WITH sha256_password BY '{os.getenv('GRAFANA_CH_PASSWORD')}';",
