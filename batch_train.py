@@ -1,6 +1,7 @@
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, lead
+from pyspark.sql.window import Window
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml import Pipeline
 from dotenv import load_dotenv
@@ -46,10 +47,21 @@ df = spark.read \
     .option("numPartitions", "8") \
     .load()
 
-# --- 3. Pembersihan Data ---
-print("[3] Membersihkan data dari Null...")
-# Fitur dan target diasumsikan sudah ada dari ClickHouse (termasuk kolom 'target')
+# --- 3. Hitung Target & Pembersihan Data ---
+print("[3] Menghitung Target dan Membersihkan data dari Null...")
+
+df = df.withColumn("date_part", col("time").cast("date"))
+
+# Jendela Waktu (WAJIB menggunakan partitionBy agar komputasi terdistribusi)
+window_exact = Window.partitionBy("date_part").orderBy("time_unix")
+
+# Target Regresi: Nominal selisih harga 60 detik ke depan
+df = df.withColumn("next_close_60", lead("close", 60).over(window_exact))
+df = df.withColumn("target", col("next_close_60") - col("close"))
+
+# Bersihkan nilai Null dan Hapus kolom sementara yang tidak perlu
 df = df.dropna()
+df = df.drop("date_part", "next_close_60")
 
 # OPTIMASI: Kunci hasil pengambilan data di memori
 df.cache()
