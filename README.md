@@ -53,7 +53,7 @@ python inject.py
 
 ### 7. Run Feature Preprocessing
 
-Compute analytical and statistical metrics (e.g., Standard Deviation, Moving Averages, and 60-second Deltas) for Random Forest training. It uses incremental loading and deduplication via ClickHouse's ReplacingMergeTree:
+Compute analytical and statistical metrics (e.g., Standard Deviation, Moving Averages, and 60-second Deltas) for Random Forest training. It uses incremental loading and deduplication via ClickHouse's ReplacingMergeTree :
 
 ```bash
 python run_preprocessing.py
