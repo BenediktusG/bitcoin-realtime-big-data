@@ -128,6 +128,15 @@ def main():
         spark.stop()
         return
 
+    # Bersihkan data: Hapus baris dengan nilai null atau NaN
+    spark_df = spark_df.dropna()
+
+    # Cek lagi setelah pembersihan
+    if spark_df.rdd.isEmpty():
+        logging.info("Tidak ada data setelah pembersihan (semua null/NaN). Keluar...")
+        spark.stop()
+        return
+
     logging.info("Memulai Spark untuk prediksi...")
 
     # 5. Load Model dari HDFS
