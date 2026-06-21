@@ -154,8 +154,30 @@ docker cp .env spark-master3:/.env
 
 ### 5. Run the script in docker container
 
-change the file if u want to change the model. this command use 4gb ram and driver memory 2gb. it takes like 30-45 minutes to train. So go goon first.
-
 ```bash
 docker exec -it spark-master3 /opt/spark/bin/spark-submit --master spark://spark-master3:7077 --driver-memory 2g  --executor-memory 4g --jars /clickhouse-jdbc.jar --driver-class-path /clickhouse-jdbc.jar /batch_prediction.py
+```
+
+## Stream Processing (Spark Streaming)
+### 1. install some dependencies for run the model script
+
+```bash
+docker exec -it spark-master3 pip install python-dotenv
+```
+
+### 2. copy stream_processing code into spark container
+
+```bash
+docker cp stream_processing.py spark-master3:/stream_processing.py
+```
+
+### 3. copy the env variables into spark container
+```bash
+docker cp .env spark-master3:/.env
+```
+
+### 4. Run the script in docker container
+
+```bash
+docker exec -it spark-master3 /opt/spark/bin/spark-submit --master spark://spark-master3:7077 --driver-memory 2g  --executor-memory 4g --jars /clickhouse-jdbc.jar --driver-class-path /clickhouse-jdbc.jar /stream_processing.py
 ```
