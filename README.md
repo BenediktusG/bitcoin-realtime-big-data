@@ -192,7 +192,8 @@ docker exec -it spark-master3 /opt/spark/bin/spark-submit --master spark://spark
 ### 1. install some dependencies for run the model script
 
 ```bash
-docker exec -it spark-master3 pip install python-dotenv pandas clickhouse-connect
+docker exec -it spark-master3 pip install python-dotenv pandas clickhouse-connect pyarrow
+docker exec -it spark-worker3 pip install python-dotenv pandas clickhouse-connect pyarrow
 ```
 
 ### 2. copy stream_processing code into spark container
