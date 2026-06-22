@@ -29,31 +29,6 @@ def get_clickhouse_client():
         logging.error(f"Gagal terhubung ke ClickHouse: {e}")
         raise
 
-def setup_features_table(client):
-    # membuat table jika belum ada 
-    
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS bigdata.bitcoin_features (
-        time DateTime,
-        close Float64,
-        volume Float64,
-        volume_lag_1 Float64,
-        close_delta Float64,
-        dist_to_mean_5 Float64,
-        dist_to_mean_60 Float64,
-        dist_to_max_60 Float64,
-        dist_to_min_60 Float64,
-        close_std_60 Float64,
-        volume_sum_60 Float64,
-        close_delta_60 Float64
-    ) ENGINE = ReplacingMergeTree()
-    PARTITION BY toYYYYMM(time)
-    ORDER BY (time);
-    """
-    client.command(create_table_query)
-    logging.info("Tabel 'bitcoin_features' siap digunakan (ReplacingMergeTree).")
-
-
 def run_preprocessing(client):
     logging.info("Memulai proses preprocessing untuk fitur Random Forest (Volume/Close Lag, Delta, Distances, StdDev, Sum)...")
     
@@ -120,9 +95,6 @@ if __name__ == '__main__':
     ch_client = get_clickhouse_client()
     
     if ch_client:
-        # Inisialisasi infrastruktur
-        setup_features_table(ch_client)
-        
         # Eksekusi proses preprocessing
         run_preprocessing(ch_client)
         
