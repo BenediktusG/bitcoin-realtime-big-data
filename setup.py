@@ -96,6 +96,32 @@ def setup_clickhouse():
         ) ENGINE = MergeTree()
         PARTITION BY toYYYYMM(time)
         ORDER BY (time);
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS bigdata.bitcoin_features (
+            time DateTime,
+            close Float64,
+            volume Float64,
+            volume_lag_1 Float64,
+            close_delta Float64,
+            dist_to_mean_5 Float64,
+            dist_to_mean_60 Float64,
+            dist_to_max_60 Float64,
+            dist_to_min_60 Float64,
+            close_std_60 Float64,
+            volume_sum_60 Float64,
+            close_delta_60 Float64
+        ) ENGINE = ReplacingMergeTree()
+        PARTITION BY toYYYYMM(time)
+        ORDER BY (time);
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS bigdata.bitcoin_predictions (
+            time DateTime,
+            close_prediction Nullable(Float64)
+        ) ENGINE = ReplacingMergeTree()
+        PARTITION BY toYYYYMM(time)
+        ORDER BY (time);
         """
     ]
 

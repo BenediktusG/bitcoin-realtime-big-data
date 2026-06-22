@@ -46,20 +46,6 @@ def execute_clickhouse_ddl(spark, jdbc_url, user, password, query):
         logging.warning(f"Gagal menjalankan query DDL/JDBC: {e}")
         return False
 
-def setup_predictions_table(spark, jdbc_url, user, password):
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS bigdata.bitcoin_predictions (
-        time DateTime,
-        close_prediction Nullable(Float64)
-    ) ENGINE = ReplacingMergeTree()
-    PARTITION BY toYYYYMM(time)
-    ORDER BY (time);
-    """
-    if execute_clickhouse_ddl(spark, jdbc_url, user, password, create_table_query):
-        logging.info("Tabel 'bitcoin_predictions' siap digunakan (ReplacingMergeTree).")
-    else:
-        logging.warning("Tidak dapat membuat/memverifikasi tabel (mungkin hak akses DDL terbatas).")
-
 def main():
     # 1. Inisialisasi Spark Session
     if os.path.exists('/.dockerenv') or os.getenv('SPARK_HOME') is not None:
@@ -73,10 +59,7 @@ def main():
         .getOrCreate() 
     spark.sparkContext.setLogLevel("WARN")
 
-    # 2. Inisialisasi Tabel Prediksi via Spark JDBC
-    setup_predictions_table(spark, jdbc_url, CH_USER, CH_PASSWORD)
-
-    # 3. Dapatkan waktu terakhir yang sudah diprediksi untuk idempotensi & inkremental
+    # 2. Dapatkan waktu terakhir yang sudah diprediksi untuk idempotensi & inkremental
     latest_time_res = "1970-01-01 00:00:00"
     try:
         df_max = spark.read \
@@ -100,7 +83,7 @@ def main():
 
     logging.info(f"Mengambil data baru dengan time > '{latest_time_res}'")
 
-    # 4. Ambil data baru secara native menggunakan Spark JDBC
+    # 3. Ambil data baru secara native menggunakan Spark JDBC
     query = f"""
     (
         SELECT 
@@ -139,23 +122,23 @@ def main():
 
     logging.info("Memulai Spark untuk prediksi...")
 
-    # 5. Load Model dari HDFS
+    # 4. Load Model dari HDFS
     hdfs_path = "hdfs://namenode3:9000/models/random_forest_reg"
     logging.info(f"Memuat model dari HDFS: {hdfs_path}")
     model = PipelineModel.load(hdfs_path)
 
-    # 6. Siapkan data untuk model (tambahkan time_unix)
+    # 5. Siapkan data untuk model (tambahkan time_unix)
     spark_df = spark_df.withColumn("time_unix", col("time").cast("long"))
 
-    # 7. Jalankan Inference Model
+    # 6. Jalankan Inference Model
     predictions = model.transform(spark_df)
 
-    # 8. Hitung close_prediction = close + prediction, dan geser time ke +60 detik
+    # 7. Hitung close_prediction = close + prediction, dan geser time ke +60 detik
     result_spark_df = predictions.withColumn("close_prediction", col("close") + col("prediction")) \
                                  .withColumn("time", (col("time_unix") + 60).cast("timestamp")) \
                                  .select("time", "close_prediction")
 
-    # 9. Tulis ke ClickHouse secara native via Spark JDBC
+    # 8. Tulis ke ClickHouse secara native via Spark JDBC
     logging.info("Menulis prediksi kembali ke ClickHouse via Spark JDBC...")
     result_spark_df.write \
         .format("jdbc") \
@@ -167,7 +150,7 @@ def main():
         .mode("append") \
         .save()
 
-    # 10. Jalankan OPTIMIZE untuk deduplikasi ReplacingMergeTree jika diizinkan
+    # 9. Jalankan OPTIMIZE untuk deduplikasi ReplacingMergeTree jika diizinkan
     try:
         logging.info("Deduplikasi final (OPTIMIZE TABLE)...")
         execute_clickhouse_ddl(spark, jdbc_url, CH_USER, CH_PASSWORD, "OPTIMIZE TABLE bigdata.bitcoin_predictions FINAL")
