@@ -79,7 +79,7 @@ def setup_clickhouse():
             kafka_num_consumers = 2;
         """,
         f"""
-        CREATE MATERIALIZED VIEW iF NOT EXISTS bigdata.bitcoin_mv TO bigdata.bitcoin_orders AS
+        CREATE MATERIALIZED VIEW IF NOT EXISTS bigdata.bitcoin_mv TO bigdata.bitcoin_orders AS
         SELECT
             time,
             open,
