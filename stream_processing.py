@@ -76,7 +76,7 @@ def process_state(key, pdfs, state):
         return iter([])
 
     if state.exists:
-        history = json.loads(state.get()[0])
+        history = json.loads(state.get[0])
     else:
         history = []
         
