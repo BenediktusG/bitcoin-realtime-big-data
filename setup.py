@@ -88,6 +88,14 @@ def setup_clickhouse():
             close,
             volume
         FROM bigdata.bitcoin_incoming_orders;
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS bigdata.bitcoin_realtime_predictions (
+            time DateTime,
+            close_prediction Float64
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMM(time)
+        ORDER BY (time);
         """
     ]
 
