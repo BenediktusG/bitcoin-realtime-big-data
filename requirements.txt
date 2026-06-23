@@ -10,3 +10,4 @@ six==1.17.0
 urllib3==2.7.0
 zstandard==0.25.0
 pyspark==4.1.2
+streamlit==1.58.0

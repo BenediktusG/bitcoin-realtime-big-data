@@ -122,6 +122,110 @@ def setup_clickhouse():
         ) ENGINE = ReplacingMergeTree()
         PARTITION BY toYYYYMM(time)
         ORDER BY (time);
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS bigdata.bitcoin_orders_1h_agg (
+            time DateTime,
+            open_state AggregateFunction(argMin, Float64, DateTime),
+            high_state AggregateFunction(max, Float64),
+            low_state AggregateFunction(min, Float64),
+            close_state AggregateFunction(argMax, Float64, DateTime),
+            avg_close_state AggregateFunction(avg, Float64),
+            volume_state AggregateFunction(sum, Float64)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time)
+        ORDER BY (time);
+        """,
+        f"""
+        CREATE MATERIALIZED VIEW IF NOT EXISTS bigdata.bitcoin_orders_1h_mv
+        TO bigdata.bitcoin_orders_1h_agg AS
+        SELECT
+            toStartOfInterval(time, INTERVAL 1 HOUR) AS time,
+            argMinState(open, time) AS open_state,
+            maxState(high) AS high_state,
+            minState(low) AS low_state,
+            argMaxState(close, time) AS close_state,
+            avgState(close) AS avg_close_state,
+            sumState(volume) AS volume_state
+        FROM bigdata.bitcoin_orders
+        GROUP BY time;
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS bigdata.bitcoin_predictions_1h_agg (
+            time DateTime,
+            close_prediction_state AggregateFunction(avg, Float64)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time)
+        ORDER BY (time);
+        """,
+        f"""
+        CREATE MATERIALIZED VIEW IF NOT EXISTS bigdata.bitcoin_predictions_1h_mv
+        TO bigdata.bitcoin_predictions_1h_agg AS
+        SELECT
+            toStartOfInterval(time, INTERVAL 1 HOUR) AS time,
+            avgState(assumeNotNull(close_prediction)) AS close_prediction_state
+        FROM bigdata.bitcoin_predictions
+        WHERE close_prediction IS NOT NULL
+        GROUP BY time;
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS bigdata.bitcoin_features_1h_agg (
+            time DateTime,
+            close_delta_state AggregateFunction(avg, Float64),
+            close_std_60_state AggregateFunction(avg, Float64),
+            dist_to_mean_60_state AggregateFunction(avg, Float64),
+            volume_sum_60_state AggregateFunction(avg, Float64)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time)
+        ORDER BY (time);
+        """,
+        f"""
+        CREATE MATERIALIZED VIEW IF NOT EXISTS bigdata.bitcoin_features_1h_mv
+        TO bigdata.bitcoin_features_1h_agg AS
+        SELECT
+            toStartOfInterval(time, INTERVAL 1 HOUR) AS time,
+            avgState(close_delta) AS close_delta_state,
+            avgState(close_std_60) AS close_std_60_state,
+            avgState(dist_to_mean_60) AS dist_to_mean_60_state,
+            avgState(volume_sum_60) AS volume_sum_60_state
+        FROM bigdata.bitcoin_features
+        GROUP BY time;
+        """,
+        f"""
+        INSERT INTO bigdata.bitcoin_orders_1h_agg
+        SELECT
+            toStartOfInterval(time, INTERVAL 1 HOUR) AS time,
+            argMinState(open, time) AS open_state,
+            maxState(high) AS high_state,
+            minState(low) AS low_state,
+            argMaxState(close, time) AS close_state,
+            avgState(close) AS avg_close_state,
+            sumState(volume) AS volume_state
+        FROM bigdata.bitcoin_orders
+        WHERE (SELECT count() FROM bigdata.bitcoin_orders_1h_agg) = 0
+        GROUP BY time;
+        """,
+        f"""
+        INSERT INTO bigdata.bitcoin_predictions_1h_agg
+        SELECT
+            toStartOfInterval(time, INTERVAL 1 HOUR) AS time,
+            avgState(assumeNotNull(close_prediction)) AS close_prediction_state
+        FROM bigdata.bitcoin_predictions
+        WHERE close_prediction IS NOT NULL
+          AND (SELECT count() FROM bigdata.bitcoin_predictions_1h_agg) = 0
+        GROUP BY time;
+        """,
+        f"""
+        INSERT INTO bigdata.bitcoin_features_1h_agg
+        SELECT
+            toStartOfInterval(time, INTERVAL 1 HOUR) AS time,
+            avgState(close_delta) AS close_delta_state,
+            avgState(close_std_60) AS close_std_60_state,
+            avgState(dist_to_mean_60) AS dist_to_mean_60_state,
+            avgState(volume_sum_60) AS volume_sum_60_state
+        FROM bigdata.bitcoin_features
+        WHERE (SELECT count() FROM bigdata.bitcoin_features_1h_agg) = 0
+        GROUP BY time;
         """
     ]
 
